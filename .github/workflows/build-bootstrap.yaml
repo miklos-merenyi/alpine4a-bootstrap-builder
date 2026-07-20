@@ -1,0 +1,70 @@
+name: build-bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: Build type
+        type: choice
+        options:
+        - release
+        - pre-release
+        - artifact-only
+jobs:
+  build-bootstrap:
+    name: Build architecture specific bootstrap
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, i686, aarch64, armv7a]
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+      - name: Add SHORT_SHA env property with commit short sha
+        run: echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c1-8`" >> $GITHUB_ENV
+      - name: Set up QEMU user mode
+        uses: docker/setup-qemu-action@v3
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r23
+          add-to-path: true
+      - name: Build bootstrap
+        run: |
+          bash scripts/create-bootstrap.sh ${{ matrix.arch }} ${SHORT_SHA}
+        env:
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ env.SHORT_SHA }}-${{ matrix.arch }}
+          path: build/bootstrap-3.20-${{ matrix.arch }}.zip
+  release:
+    permissions: write-all
+    if: ${{ github.event.inputs.build-type != 'artifact-only' }}
+    needs: [build-bootstrap]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the built bootstrap artifacts
+        uses: actions/download-artifact@v4
+      - name: Add SHORT_SHA env property with commit short sha
+        run: echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c1-8`" >> $GITHUB_ENV
+      - name: Create a tag for the release
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          custom_tag: ${{ env.SHORT_SHA }}-3.20
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ github.event.inputs.build-type == 'pre-release' }}
+          body: Alpine4A bootstrap ${{ env.SHORT_SHA }}, Alpine Linux 3.20
+          tag_name: v${{ env.SHORT_SHA }}-3.20
+          files: |
+            bootstrap-${{ env.SHORT_SHA }}-i686/bootstrap-3.20-i686.zip
+            bootstrap-${{ env.SHORT_SHA }}-x86_64/bootstrap-3.20-x86_64.zip
+            bootstrap-${{ env.SHORT_SHA }}-aarch64/bootstrap-3.20-aarch64.zip
+            bootstrap-${{ env.SHORT_SHA }}-armv7a/bootstrap-3.20-armv7a.zip

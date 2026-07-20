@@ -1,0 +1,79 @@
+#!/usr/bin/env sh
+# Generates a full alpine4a bootstrap + startup scripts for a given architecture
+
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Usage: <arch> <bootstrap shortsha>"
+    exit 1
+fi
+
+set -e
+
+# Configures NDK for android cross-compilation
+if [[ -z "${NDK_PATH}" ]]; then
+    echo "NDK Path not set" >&2
+    exit 1
+fi
+
+# add NDK to PATH
+export PATH="$PATH:$NDK_PATH"
+export ARCH=$1
+export BOOTSTRAP_SHA=$2
+export ALPINE_VERSION='3.20'
+export BUILD_DIR="$PWD/build"
+
+rm -rf build/
+mkdir build/
+
+BUILD_PRE5=false
+
+# Build talloc, proot
+. ./scripts/build-talloc.sh
+. ./scripts/build-proot.sh
+
+if [ "$ARCH" == 'armv7a' ] || [ "$ARCH" == 'i686' ]; then
+    # for API level <21, we need to get separate proot and talloc binaries
+    BUILD_PRE5=true
+    . ./scripts/build-talloc.sh
+    . ./scripts/build-proot.sh
+fi
+
+echo "Building minitar binaries"
+cd external/minitar
+sh build.sh
+cd ../../
+
+# Build alpine bootstrap
+. ./scripts/build-octo4a-bootstrap.sh
+
+echo "Preparing full bootstrap archive"
+mkdir build/bootstrap-dir
+
+# include proot
+cp -r build/root-$ARCH/root/* build/bootstrap-dir/
+
+if $BUILD_PRE5; then
+    # include pre5 proot and minitar binaries
+    cp -r build/root-$ARCH-pre5/root/bin build/bootstrap-dir/bin-pre5
+    cp -r build/root-$ARCH-pre5/root/libexec build/bootstrap-dir/libexec-pre5
+    cp external/minitar/build/libs/$ARCH_NDK/minitar build/bootstrap-dir/bin-pre5
+fi
+
+# include bootstrap archive
+mv build/rootfs.tar.xz build/bootstrap-dir/
+
+# include minitar
+cp external/minitar/build/libs/$ARCH_NDK/minitar build/bootstrap-dir/bin
+
+# include entrypoint script
+cp scripts/run-bootstrap-android.sh build/bootstrap-dir/entrypoint.sh
+
+# misc
+cp src/fake_proc_stat build/bootstrap-dir/
+
+# short ver to the bootstrap
+echo "$ALPINE_VERSION-$BOOTSTRAP_SHA" >>build/bootstrap-dir/build-version.txt
+
+# Compress the complete bootstrap
+cd build/bootstrap-dir && zip -r ../bootstrap-$ALPINE_VERSION-$ARCH.zip *
+
+echo "Bootstrap successfully built - compressed as build/bootstrap-$ALPINE_VERSION-$ARCH.zip"
